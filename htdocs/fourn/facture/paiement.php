@@ -28,7 +28,7 @@
 /**
  *	\file       htdocs/fourn/facture/paiement.php
  *	\ingroup    fournisseur,facture
- *	\brief      Payment page for suppliers invoices
+ *	\brief      Payment page for supplier invoices
  */
 
 require '../../main.inc.php';
@@ -38,11 +38,13 @@ require_once DOL_DOCUMENT_ROOT.'/fourn/class/paiementfourn.class.php';
 require_once DOL_DOCUMENT_ROOT.'/core/class/html.formother.class.php';
 require_once DOL_DOCUMENT_ROOT.'/core/lib/date.lib.php';
 
+// Load translation files required by the page
 $langs->loadLangs(array('companies', 'bills', 'banks', 'compta'));
 
-// Security check
 $action		= GETPOST('action', 'alpha');
 $confirm	= GETPOST('confirm', 'alpha');
+$optioncss = GETPOST('optioncss', 'alpha');
+
 $facid		= GETPOST('facid', 'int');
 $socid		= GETPOST('socid', 'int');
 $accountid	= GETPOST('accountid', 'int');
@@ -50,26 +52,25 @@ $day		= GETPOST('day', 'int');
 $month		= GETPOST('month', 'int');
 $year		= GETPOST('year', 'int');
 
-$search_ref=GETPOST("search_ref", "int");
+$search_ref=GETPOST("search_ref", "alpha");
 $search_account=GETPOST("search_account", "int");
 $search_paymenttype=GETPOST("search_paymenttype");
 $search_amount=GETPOST("search_amount", 'alpha');    // alpha because we must be able to search on "< x"
 $search_company=GETPOST("search_company", 'alpha');
 $search_payment_num=GETPOST('search_payment_num', 'alpha');
 
+$limit = GETPOST('limit', 'int')?GETPOST('limit', 'int'):$conf->liste_limit;
 $sortfield = GETPOST("sortfield", 'alpha');
 $sortorder = GETPOST("sortorder", 'alpha');
 $page = GETPOST("page", 'int');
 if (empty($page) || $page == -1) { $page = 0; }     // If $page is not defined, or '' or -1
-$offset = $conf->liste_limit * $page;
+$offset = $limit * $page;
 $pageprev = $page - 1;
 $pagenext = $page + 1;
-$limit = GETPOST('limit', 'int')?GETPOST('limit', 'int'):$conf->liste_limit;
 if (! $sortorder) $sortorder="DESC";
 if (! $sortfield) $sortfield="p.rowid";
-$optioncss = GETPOST('optioncss', 'alpha');
 
-$amounts = array();array();
+$amounts = array();
 $amountsresttopay=array();
 $addwarning=0;
 
@@ -84,7 +85,7 @@ if ($user->societe_id > 0)
 
 
 // Initialize technical object to manage hooks of page. Note that conf->hooks_modules contains array of hook context
-$hookmanager->initHooks(array('paymentsupplier'));
+$hookmanager->initHooks(array('paymentsupplierlist'));
 $extrafields = new ExtraFields($db);
 
 // fetch optionals attributes and labels
@@ -247,7 +248,23 @@ if (empty($reshook))
 	{
 	    $error=0;
 
-	    $datepaye = dol_mktime(12, 0, 0, GETPOST('remonth'), GETPOST('reday'), GETPOST('reyear'));
+	    $datepaye = dol_mktime(12, 0, 0, GETPOST('remonth', 'int'), GETPOST('reday', 'int'), GETPOST('reyear', 'int'));
+
+        // Clean parameters amount if payment is for a credit note
+        if (GETPOST('type', 'int') == FactureFournisseur::TYPE_CREDIT_NOTE)
+        {
+            foreach ($amounts as $key => $value)	// How payment is dispatch
+            {
+                $newvalue = price2num($value, 'MT');
+                $amounts[$key] = -$newvalue;
+            }
+
+            foreach ($multicurrency_amounts as $key => $value)	// How payment is dispatch
+            {
+                $newvalue = price2num($value, 'MT');
+                $multicurrency_amounts[$key] = -$newvalue;
+            }
+        }
 
 	    if (! $error)
 	    {
@@ -317,20 +334,20 @@ if (empty($reshook))
  * View
  */
 
+$form=new Form($db);
+$formother=new FormOther($db);
+
 $supplierstatic=new Societe($db);
 $invoicesupplierstatic = new FactureFournisseur($db);
 
 llxHeader('', $langs->trans('ListPayment'));
-
-$form=new Form($db);
-$formother=new FormOther($db);
 
 if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paiement')
 {
     $object = new FactureFournisseur($db);
     $result = $object->fetch($facid);
 
-    $datefacture=dol_mktime(12, 0, 0, GETPOST('remonth'), GETPOST('reday'), GETPOST('reyear'));
+    $datefacture=dol_mktime(12, 0, 0, GETPOST('remonth', 'int'), GETPOST('reday', 'int'), GETPOST('reyear', 'int'));
     $dateinvoice=($datefacture==''?(empty($conf->global->MAIN_AUTOFILL_DATE)?-1:''):$datefacture);
 
     $sql = 'SELECT s.nom as name, s.rowid as socid,';
@@ -432,6 +449,7 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
             print '<input type="hidden" name="facid" value="'.$facid.'">';
             print '<input type="hidden" name="ref_supplier" value="'.$obj->ref_supplier.'">';
             print '<input type="hidden" name="socid" value="'.$obj->socid.'">';
+            print '<input type="hidden" name="type" id="invoice_type" value="'.$object->type.'">';
             print '<input type="hidden" name="societe" value="'.$obj->name.'">';
 
             dol_fiche_head(null);
@@ -513,17 +531,17 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 						print '<tr class="liste_titre">';
 	                    print '<td>'.$langs->trans('Invoice').'</td>';
 	                    print '<td>'.$langs->trans('RefSupplier').'</td>';
-	                    print '<td align="center">'.$langs->trans('Date').'</td>';
-	                    print '<td align="center">'.$langs->trans('DateMaxPayment').'</td>';
+	                    print '<td class="center">'.$langs->trans('Date').'</td>';
+	                    print '<td class="center">'.$langs->trans('DateMaxPayment').'</td>';
 	                    if (!empty($conf->multicurrency->enabled)) print '<td>'.$langs->trans('Currency').'</td>';
-						if (!empty($conf->multicurrency->enabled)) print '<td align="right">'.$langs->trans('MulticurrencyAmountTTC').'</td>';
-						if (!empty($conf->multicurrency->enabled)) print '<td align="right">'.$langs->trans('MulticurrencyAlreadyPaid').'</td>';
-						if (!empty($conf->multicurrency->enabled)) print '<td align="right">'.$langs->trans('MulticurrencyRemainderToPay').'</td>';
-	                    print '<td align="right">'.$langs->trans('AmountTTC').'</td>';
-	                    print '<td align="right">'.$langs->trans('AlreadyPaid').'</td>';
-	                    print '<td align="right">'.$langs->trans('RemainderToPay').'</td>';
-						print '<td align="center">'.$langs->trans('PaymentAmount').'</td>';
-						if (!empty($conf->multicurrency->enabled)) print '<td align="center">'.$langs->trans('MulticurrencyPaymentAmount').'</td>';
+						if (!empty($conf->multicurrency->enabled)) print '<td class="right">'.$langs->trans('MulticurrencyAmountTTC').'</td>';
+						if (!empty($conf->multicurrency->enabled)) print '<td class="right">'.$langs->trans('MulticurrencyAlreadyPaid').'</td>';
+						if (!empty($conf->multicurrency->enabled)) print '<td class="right">'.$langs->trans('MulticurrencyRemainderToPay').'</td>';
+	                    print '<td class="right">'.$langs->trans('AmountTTC').'</td>';
+	                    print '<td class="right">'.$langs->trans('AlreadyPaid').'</td>';
+	                    print '<td class="right">'.$langs->trans('RemainderToPay').'</td>';
+						print '<td class="center">'.$langs->trans('PaymentAmount').'</td>';
+						if (!empty($conf->multicurrency->enabled)) print '<td class="center">'.$langs->trans('MulticurrencyPaymentAmount').'</td>';
 	                    print '</tr>';
 
 	                    $total=0;
@@ -566,18 +584,18 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 	                        // Date
 	                        if ($objp->df > 0 )
 	                        {
-	                            print '<td align="center">';
+	                            print '<td class="center">';
 	                            print dol_print_date($db->jdate($objp->df), 'day').'</td>';
 	                        }
 	                        else
 	                        {
-	                            print '<td align="center"><b>!!!</b></td>';
+	                            print '<td class="center"><b>!!!</b></td>';
 	                        }
 
 	                        // Date Max Payment
 	                        if ($objp->dlr > 0 )
 	                        {
-	                            print '<td align="center">';
+	                            print '<td class="center">';
 	                            print dol_print_date($db->jdate($objp->dlr), 'day');
 
 	                            if ($invoice->hasDelay())
@@ -589,30 +607,30 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 	                        }
 	                        else
 	                        {
-	                            print '<td align="center"><b>--</b></td>';
+	                            print '<td class="center"><b>--</b></td>';
 	                        }
 
 	                        // Multicurrency
 	                        if (!empty($conf->multicurrency->enabled))
 	                        {
     	                        // Currency
-	                            print '<td align="center">'.$objp->multicurrency_code."</td>\n";
+	                            print '<td class="center">'.$objp->multicurrency_code."</td>\n";
 
-	                            print '<td align="right">';
+	                            print '<td class="right">';
 	                            if ($objp->multicurrency_code && $objp->multicurrency_code != $conf->currency)
 	                            {
 	                                print price($objp->multicurrency_total_ttc);
 	                            }
 	                            print '</td>';
 
-							    print '<td align="right">';
+							    print '<td class="right">';
 							    if ($objp->multicurrency_code && $objp->multicurrency_code != $conf->currency)
 						        {
 						            print price($objp->multicurrency_am);
 							    }
 							    print '</td>';
 
-							    print '<td align="right">';
+							    print '<td class="right">';
 							    if ($objp->multicurrency_code && $objp->multicurrency_code != $conf->currency)
 						        {
 						            print price($objp->multicurrency_total_ttc - $objp->multicurrency_am);
@@ -620,17 +638,17 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 							    print '</td>';
 	                        }
 
-	                        print '<td align="right">'.price($objp->total_ttc).'</td>';
+	                        print '<td class="right">'.price($sign * $objp->total_ttc).'</td>';
 
-	                        print '<td align="right">'.price($objp->am);
+	                        print '<td class="right">'.price($sign * $objp->am);
 							if ($creditnotes) print '+'.price($creditnotes);
 							if ($deposits) print '+'.price($deposits);
 							print '</td>';
 
-	                        print '<td align="right">'.price($remaintopay).'</td>';
+	                        print '<td class="right">'.price($sign * $remaintopay).'</td>';
 
 	                        // Amount
-	                        print '<td align="center">';
+	                        print '<td class="center">';
 
 	                        $namef = 'amount_'.$objp->facid;
 	                        $nameRemain = 'remain_'.$objp->facid;
@@ -652,7 +670,7 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 							// Multicurrency Price
 							if (! empty($conf->multicurrency->enabled))
 							{
-								print '<td align="right">';
+								print '<td class="right">';
 
 								// Add remind multicurrency amount
 								$namef = 'multicurrency_amount_'.$objp->facid;
@@ -688,19 +706,19 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 	                    {
 	                        // Print total
 	                        print '<tr class="liste_total">';
-	                        print '<td colspan="4" align="left">'.$langs->trans('TotalTTC').':</td>';
+	                        print '<td colspan="4" class="left">'.$langs->trans('TotalTTC').':</td>';
 							if (!empty($conf->multicurrency->enabled)) print '<td>&nbsp;</td>';
 							if (!empty($conf->multicurrency->enabled)) print '<td>&nbsp;</td>';
 							if (!empty($conf->multicurrency->enabled)) print '<td>&nbsp;</td>';
 							if (!empty($conf->multicurrency->enabled)) print '<td>&nbsp;</td>';
-	                        print '<td align="right"><b>'.price($total_ttc).'</b></td>';
-							print '<td align="right"><b>'.price($totalrecu);
+	                        print '<td class="right"><b>'.price($total_ttc).'</b></td>';
+							print '<td class="right"><b>'.price($totalrecu);
 							if ($totalrecucreditnote) print '+'.price($totalrecucreditnote);
 							if ($totalrecudeposits) print '+'.price($totalrecudeposits);
 							print	'</b></td>';
-	                        print '<td align="right"><b>'.price(price2num($total_ttc - $totalrecu - $totalrecucreditnote - $totalrecudeposits, 'MT')).'</b></td>';
-	                        print '<td align="center" id="result" style="font-weight: bold;"></td>';		// Autofilled
-							if (!empty($conf->multicurrency->enabled)) print '<td align="right" id="multicurrency_result" style="font-weight: bold;"></td>';
+	                        print '<td class="right"><b>'.price(price2num($total_ttc - $totalrecu - $totalrecucreditnote - $totalrecudeposits, 'MT')).'</b></td>';
+	                        print '<td class="center" id="result" style="font-weight: bold;"></td>';		// Autofilled
+							if (!empty($conf->multicurrency->enabled)) print '<td class="right" id="multicurrency_result" style="font-weight: bold;"></td>';
 	                        print "</tr>\n";
 	                    }
 	                    print "</table>\n";
@@ -750,7 +768,7 @@ if ($action == 'create' || $action == 'confirm_paiement' || $action == 'add_paie
 /*
  * Show list
  */
-if (empty($action))
+if (empty($action) || $action == 'list')
 {
     $limit = GETPOST('limit', 'int')?GETPOST('limit', 'int'):$conf->liste_limit;
     $sortfield = GETPOST("sortfield", 'alpha');
@@ -844,9 +862,10 @@ if (empty($action))
 
         print_barre_liste($langs->trans('SupplierPayments'), $page, $_SERVER["PHP_SELF"], $param, $sortfield, $sortorder, '', $num, $nbtotalofrecords, 'title_accountancy.png', 0, '', '', $limit);
 
-        print '<form method="GET" action="'.$_SERVER["PHP_SELF"].'">';
+        print '<form method="POST" action="'.$_SERVER["PHP_SELF"].'">';
         if ($optioncss != '') print '<input type="hidden" name="optioncss" value="'.$optioncss.'">';
         print '<input type="hidden" name="token" value="'.$_SESSION['newtoken'].'">';
+        print '<input type="hidden" name="action" value="list">';
         print '<input type="hidden" name="formfilteraction" id="formfilteraction" value="list">';
         print '<input type="hidden" name="sortfield" value="'.$sortfield.'">';
         print '<input type="hidden" name="sortorder" value="'.$sortorder.'">';
@@ -874,30 +893,33 @@ if (empty($action))
 
         // Lines for filters fields
         print '<tr class="liste_titre_filter">';
-        print '<td  class="liste_titre" align="left">';
+        print '<td  class="liste_titre left">';
         print '<input class="flat" type="text" size="4" name="search_ref" value="'.dol_escape_htmltag($search_ref).'">';
         print '</td>';
-        print '<td class="liste_titre" align="center">';
+        print '<td class="liste_titre center">';
         if (! empty($conf->global->MAIN_LIST_FILTER_ON_DAY)) print '<input class="flat width25 valignmiddle" type="text" maxlength="2" name="day" value="'.dol_escape_htmltag($day).'">';
         print '<input class="flat width25 valignmiddle" type="text" maxlength="2" name="month" value="'.dol_escape_htmltag($month).'">';
         $formother->select_year($year?$year:-1, 'year', 1, 20, 5);
         print '</td>';
-        print '<td class="liste_titre" align="left">';
+        print '<td class="liste_titre">';
         print '<input class="flat" type="text" size="6" name="search_company" value="'.dol_escape_htmltag($search_company).'">';
         print '</td>';
         print '<td class="liste_titre">';
         $form->select_types_paiements($search_paymenttype, 'search_paymenttype', '', 2, 1, 1);
         print '</td>';
-        print '<td class="liste_titre" align="left">';
+        print '<td class="liste_titre">';
         print '<input class="flat" type="text" size="4" name="search_payment_num" value="'.dol_escape_htmltag($search_payment_num).'">';
         print '</td>';
-        print '<td class="liste_titre">';
-        $form->select_comptes($search_account, 'search_account', 0, '', 1);
-        print '</td>';
-        print '<td class="liste_titre" align="right">';
+        if (! empty($conf->banque->enabled))
+        {
+            print '<td class="liste_titre">';
+	        $form->select_comptes($search_account, 'search_account', 0, '', 1);
+	        print '</td>';
+        }
+        print '<td class="liste_titre right">';
         print '<input class="flat" type="text" size="4" name="search_amount" value="'.dol_escape_htmltag($search_amount).'">';
         print '</td>';
-        print '<td class="liste_titre" align="right">';
+        print '<td class="liste_titre right">';
         $searchpicto=$form->showFilterAndCheckAddButtons(0);
         print $searchpicto;
         print '</td>';
@@ -905,16 +927,25 @@ if (empty($action))
 
         print '<tr class="liste_titre">';
         print_liste_field_titre("RefPayment", $_SERVER["PHP_SELF"], 'p.rowid', '', $param, '', $sortfield, $sortorder);
-        print_liste_field_titre("Date", $_SERVER["PHP_SELF"], 'dp', '', $param, 'align="center"', $sortfield, $sortorder);
+        print_liste_field_titre("Date", $_SERVER["PHP_SELF"], 'dp', '', $param, '', $sortfield, $sortorder, 'center ');
         print_liste_field_titre("ThirdParty", $_SERVER["PHP_SELF"], 's.nom', '', $param, '', $sortfield, $sortorder);
         print_liste_field_titre("Type", $_SERVER["PHP_SELF"], 'c.libelle', '', $param, '', $sortfield, $sortorder);
         print_liste_field_titre("Numero", $_SERVER["PHP_SELF"], "p.num_paiement", "", $param, "", $sortfield, $sortorder);
-        print_liste_field_titre("Account", $_SERVER["PHP_SELF"], 'ba.label', '', $param, '', $sortfield, $sortorder);
-        print_liste_field_titre("Amount", $_SERVER["PHP_SELF"], 'p.amount', '', $param, 'align="right"', $sortfield, $sortorder);
-        //print_liste_field_titre("Invoice",$_SERVER["PHP_SELF"],'ref_supplier','',$param,'',$sortfield,$sortorder);
-        print_liste_field_titre('');
+        if (! empty($conf->banque->enabled))
+        {
+            print_liste_field_titre("Account", $_SERVER["PHP_SELF"], 'ba.label', '', $param, '', $sortfield, $sortorder);
+        }
+        print_liste_field_titre("Amount", $_SERVER["PHP_SELF"], 'p.amount', '', $param, '', $sortfield, $sortorder, 'right ');
+        
+        $parameters=array('arrayfields'=>$arrayfields,'param'=>$param,'sortfield'=>$sortfield,'sortorder'=>$sortorder);
+        $reshook=$hookmanager->executeHooks('printFieldListTitle', $parameters);    // Note that $action and $object may have been modified by hook
+        print $hookmanager->resPrint;
+        
+        print_liste_field_titre('', $_SERVER["PHP_SELF"], "", '', '', '', $sortfield, $sortorder, 'maxwidthsearch ');
         print "</tr>\n";
 
+        $i = 0;
+        $totalarray=array();
         while ($i < min($num, $limit))
         {
             $objp = $db->fetch_object($resql);
@@ -923,32 +954,46 @@ if (empty($action))
 
             // Ref payment
             print '<td class="nowrap"><a href="'.DOL_URL_ROOT.'/fourn/paiement/card.php?id='.$objp->pid.'">'.img_object($langs->trans('ShowPayment'), 'payment').' '.$objp->pid.'</a></td>';
-
+            if (! $i) $totalarray['nbfield']++;
+            
             // Date
             $dateformatforpayment = 'day';
             if (! empty($conf->global->INVOICE_USE_HOURS_FOR_PAYMENT)) $dateformatforpayment='dayhour';
-            print '<td class="nowrap" align="center">'.dol_print_date($db->jdate($objp->dp), $dateformatforpayment)."</td>\n";
-
+            print '<td class="nowrap center">'.dol_print_date($db->jdate($objp->dp), $dateformatforpayment)."</td>\n";
+            if (! $i) $totalarray['nbfield']++;
+            
             // Thirdparty
             print '<td>';
             if ($objp->socid) print '<a href="'.DOL_URL_ROOT.'/societe/card.php?socid='.$objp->socid.'">'.img_object($langs->trans('ShowCompany'), 'company').' '.dol_trunc($objp->name, 32).'</a>';
             else print '&nbsp;';
             print '</td>';
-
+            if (! $i) $totalarray['nbfield']++;
+            
             // Type
             $payment_type = $langs->trans("PaymentType".$objp->paiement_type)!=("PaymentType".$objp->paiement_type)?$langs->trans("PaymentType".$objp->paiement_type):$objp->paiement_libelle;
             print '<td>'.$payment_type.' '.dol_trunc($objp->num_paiement, 32)."</td>\n";
-
+            if (! $i) $totalarray['nbfield']++;
+            
             // Payment number
             print '<td>'.$objp->num_paiement.'</td>';
-
-            print '<td>';
-            if ($objp->bid) print '<a href="'.DOL_URL_ROOT.'/compta/bank/bankentries_list.php?account='.$objp->bid.'">'.img_object($langs->trans("ShowAccount"), 'account').' '.dol_trunc($objp->label, 24).'</a>';
-            else print '&nbsp;';
-            print '</td>';
-
-            print '<td align="right">'.price($objp->pamount).'</td>';
-
+            if (! $i) $totalarray['nbfield']++;
+            
+            // Account
+            if (! empty($conf->banque->enabled))
+            {
+                print '<td>';
+	            if ($objp->bid) print '<a href="'.DOL_URL_ROOT.'/compta/bank/bankentries_list.php?account='.$objp->bid.'">'.img_object($langs->trans("ShowAccount"), 'account').' '.dol_trunc($objp->label, 24).'</a>';
+    	        else print '&nbsp;';
+        	    print '</td>';
+            	if (! $i) $totalarray['nbfield']++;
+            }
+            
+            // Amount
+            print '<td class="right">'.price($objp->pamount).'</td>';
+            if (! $i) $totalarray['nbfield']++;
+            $totalarray['pos'][7]='amount';
+            $totalarray['val']['amount'] += $objp->pamount;
+            
             // Ref invoice
             /*$invoicesupplierstatic->ref=$objp->ref_supplier;
             $invoicesupplierstatic->id=$objp->facid;
@@ -956,10 +1001,35 @@ if (empty($action))
             print $invoicesupplierstatic->getNomUrl(1);
             print '</td>';*/
 
-			print '<td>&nbsp;</td>';
+			print '<td></td>';
+			if (! $i) $totalarray['nbfield']++;
+			
             print '</tr>';
             $i++;
         }
+        
+        // Show total line
+        if (isset($totalarray['pos']))
+        {
+            print '<tr class="liste_total">';
+            $i=0;
+            while ($i < $totalarray['nbfield'])
+            {
+                $i++;
+                if (! empty($totalarray['pos'][$i]))  print '<td class="right">'.price($totalarray['val'][$totalarray['pos'][$i]]).'</td>';
+                else
+                {
+                    if ($i == 1)
+                    {
+                        if ($num < $limit) print '<td class="left">'.$langs->trans("Total").'</td>';
+                        else print '<td class="left">'.$langs->trans("Totalforthispage").'</td>';
+                    }
+                    else print '<td></td>';
+                }
+            }
+            print '</tr>';
+        }
+        
         print "</table>";
         print "</div>";
         print "</form>\n";
